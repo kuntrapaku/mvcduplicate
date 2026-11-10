@@ -1,60 +1,59 @@
 name: Registration CI
-# Name displayed in GitHub's Actions tab.
+# The workflow name shown in GitHub Actions.
 
 on:
   push:
     branches: [master]
-    # Run when code is pushed to master.
+    # Run after a push to master.
   pull_request:
     branches: [master]
-    # Also run for pull requests targeting master.
+    # Test pull requests targeting master.
   workflow_dispatch:
-    # Allow a manual run from GitHub.
+    # Allow manual runs.
 
 permissions:
   contents: read
-  # Allow this workflow to read the repository.
+  packages: write
+  # Read the repository and publish container images.
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Use a temporary Linux machine supplied by GitHub.
+    # Use a temporary GitHub-hosted Linux machine.
 
     services:
       postgres:
         image: postgres:16
-        # Start a temporary PostgreSQL database for tests.
+        # Start a temporary database for tests.
 
         env:
           POSTGRES_DB: mvc_mobapp
           POSTGRES_USER: ci_user
           POSTGRES_PASSWORD: ci_test_password
-          # These credentials belong only to the temporary CI database.
-          # Do not replace them with your real database credentials.
+          # Temporary test credentials, not your real credentials.
 
         ports:
           - 5432:5432
-          # Make PostgreSQL accessible from the runner.
+          # Expose the test database to the runner.
 
         options: >-
           --health-cmd "pg_isready -U ci_user -d mvc_mobapp"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        # Wait for PostgreSQL to become ready before running steps.
+        # Wait for the database to become ready.
 
     env:
       SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/mvc_mobapp
       SPRING_DATASOURCE_USERNAME: ci_user
       SPRING_DATASOURCE_PASSWORD: ci_test_password
       SPRING_JPA_HIBERNATE_DDL_AUTO: create-drop
-      # Connect Spring tests to the temporary database.
-      # Create its tables for the test application context.
+      # Configure Spring tests to use the temporary database.
 
     steps:
       - name: Download repository
         uses: actions/checkout@v6
-        # Copy your committed code onto the runner.
+        # Download the committed source code.
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -63,14 +62,33 @@ jobs:
           java-version: '17'
           cache: maven
           cache-dependency-path: demo/pom.xml
-        # Install Java and cache downloaded Maven dependencies.
+        # Set up Java and cache Maven dependencies.
 
       - name: Test and package
         run: mvn --batch-mode -f demo/pom.xml clean verify
-        # Compile the application, run tests, and create the JAR.
-        # Stop the job if this command fails.
+        # Run tests and create the application JAR.
 
       - name: Build Docker image
         run: docker build -t mvcduplicate:${{ github.sha }} ./demo
-        # Build the image only after the Maven step succeeds.
-        # Use the commit ID as the image tag.
+        # Build an image tagged with this commit's ID.
+
+      - name: Publish image to GitHub Container Registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        # Publish only from master, never from pull-request runs.
+
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub supplies this temporary token automatically.
+
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # Create a lowercase image name from the repository name.
+
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Authenticate without putting the token in command arguments.
+
+          docker tag "mvcduplicate:$GITHUB_SHA" "$IMAGE:$GITHUB_SHA"
+          # Give the built image its registry name and commit tag.
+
+          docker push "$IMAGE:$GITHUB_SHA"
+          # Upload this specific version to GitHub Container Registry.
